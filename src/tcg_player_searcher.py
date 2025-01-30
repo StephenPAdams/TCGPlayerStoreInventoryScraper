@@ -10,6 +10,7 @@ from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import constants
+import time
 
 def is_json(myjson):
   """Checks to see if the given string is valid JSON
@@ -116,18 +117,18 @@ def scrape_store_inventory(driver, store_front_url, set_name):
 
 def scroll_to_bottom(driver):
     scroll_height = driver.execute_script("return document.body.scrollHeight;")
-    increment = 300
+    increment = 400
 
     for i in range(0, scroll_height, increment):
         driver.execute_script(f"window.scrollTo(0, {i});")
-        time.sleep(0.25)
+        time.sleep(0.10)
 
 def scrape_store_page_contents(driver, url):    
     #TODO: Adjust to grab list view so we can get expanded info, primarily the actual condition, if it's foil, and quantity available, will also show multiple available, too
 
     driver.get(url)
 
-    time.sleep(5)
+    time.sleep(3)
 
     scroll_to_bottom(driver)
 
@@ -231,7 +232,7 @@ def get_sets(driver, store_front_url):
 
     driver.get(url)
 
-    time.sleep(5)
+    time.sleep(3)
 
     try:
         found_panels = driver.find_elements(By.CSS_SELECTOR, 'div.tcg-accordion-panel')
@@ -298,6 +299,8 @@ def main(argv):
     if want_file_location:
         desired_cards = load_desired_cards_from_file(want_file_location)
 
+    start = time.time()
+
     store_id = get_store_id(store_name)
 
     if not store_id:
@@ -322,12 +325,25 @@ def main(argv):
 
     if sets:
         for set in sets:
+            store_card_set_inventory = []
             print("Scraping by set name: " + set)
-            store_card_inventory += scrape_store_inventory(driver, store_front_url, set)
+            store_card_set_inventory += scrape_store_inventory(driver, store_front_url, set)
+            print("Cards found in set: " + str(len(store_card_set_inventory)))
+
+            store_card_inventory += store_card_set_inventory
 
     found_cards_in_inventory = find_wanted_cards(store_card_inventory, desired_cards)
 
     write_to_excel(store_card_inventory, desired_cards, found_cards_in_inventory)
+
+    end = time.time()
+    elapsed_time = end - start
+    total_cards_scraped = len(store_card_inventory)
+    cards_scraped_per_second = total_cards_scraped / elapsed_time
+
+    print("Script run time: " + str(elapsed_time))
+    print("Cards scraped: " + str(total_cards_scraped))
+    print("Cards scraped per second: " + str(cards_scraped_per_second))
 
     #TODO: Maybe do a price comparison between found cards in store inventory and TCGPlayer market price
     #TODO: Add found cards over
