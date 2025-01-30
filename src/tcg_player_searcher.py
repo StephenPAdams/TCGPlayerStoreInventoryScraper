@@ -4,10 +4,12 @@ import json
 import pandas as pd
 import getopt
 import sys
+import urllib.parse
 from selenium.webdriver import Chrome, ChromeOptions
+from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-from . import constants
+import constants
 
 def is_json(myjson):
   """Checks to see if the given string is valid JSON
@@ -64,16 +66,14 @@ def get_store_info(store_key):
     return ""
 
 # have to scrape store inventory, as the TCGPlayer API requires a store to authenticate in order to get their inventory that way
-def scrape_store_inventory(store_front_url):
+def scrape_store_inventory(driver, store_front_url, set_name):
     # We'll want to restrict to the product search, particularly only for MTG cards
     # /search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48
     url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48"
 
-    options = ChromeOptions()
-    options.add_argument('--start-maximized')
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    
-    driver = Chrome(options=options)
+    if set_name:
+        set_qs = { "setName": set_name }
+        url = url + "&" + urllib.parse.urlencode(set_qs)
 
     # Get number of pages available, first
     driver.get(url)
@@ -81,21 +81,27 @@ def scrape_store_inventory(store_front_url):
     # Waiting for web requests to finish. Yeah, better ways to do this. Sue me.
     driver.implicitly_wait(5)
 
-    last_page = driver.find_element(By.CSS_SELECTOR, ".tcg-pagination .tcg-pagination__pages .tcg-standard-button--flat:nth-last-child(1)")
-    total_pages = 1
-    if last_page:
-        total_pages = int(last_page.text)
+    try:
+        last_page = driver.find_element(By.CSS_SELECTOR, ".tcg-pagination .tcg-pagination__pages .tcg-standard-button--flat:nth-last-child(1)")
+        total_pages = 1
+        if last_page:
+            total_pages = int(last_page.text)
+    except Exception as e:
+        total_pages = 1
 
     # Looks like TCGPlayer may limit how many pages with pageSize=48 somebody can go. Looks like the stopper is something like 208. Which is nearly 10k cards.
     # Tried 36 as the number per page, and the top limit is around 277 pages which is also right near 10k cards. 
     # Tried 24 as the number per page, and my hunch was it'd stop at double the 48 pageSize (416). And this was true, too. So, looks like TCGPlayer doesn't want you to go more
     # than 10k products deep.
-    # TODO:
-    # Might be best to go to the Sets and iterate through each of them and do those in batches
+    # So, that's why we're scraping by set
 
     all_cards = []
     for page_number in range(total_pages):
         paginated_url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48&page=" + str(page_number+1)
+
+        if set_name:
+            set_qs = { "setName": set_name }
+            paginated_url = paginated_url + "&" + urllib.parse.urlencode(set_qs)
 
         cards = scrape_store_page_contents(driver, paginated_url)
 
@@ -117,6 +123,8 @@ def scroll_to_bottom(driver):
         time.sleep(0.25)
 
 def scrape_store_page_contents(driver, url):    
+    #TODO: Adjust to grab list view so we can get expanded info, primarily the actual condition, if it's foil, and quantity available, will also show multiple available, too
+
     driver.get(url)
 
     time.sleep(5)
@@ -141,7 +149,7 @@ def scrape_store_page_contents(driver, url):
             if (rarity_holder):
                 rarity = rarity_holder.text.replace("Rarity - ", "")
         except Exception as e:
-            print(e)
+            rarity = ""
 
         price = card.find_element(By.CSS_SELECTOR, ".search-results-cards__price").text.replace("As low as ", "")
         image_url = ""
@@ -152,7 +160,7 @@ def scrape_store_page_contents(driver, url):
             if (image):
                 image_url = image.get_attribute("src")
         except Exception as e:
-            print(e)
+            image_url = ""
         
         product_url = card.get_attribute("href")
 
@@ -217,6 +225,47 @@ def write_to_excel(store_card_inventory, wanted_cards, found_cards):
     
     writer.close()
 
+def get_sets(driver, store_front_url):
+    url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48"
+    sets = []
+
+    driver.get(url)
+
+    time.sleep(5)
+
+    try:
+        found_panels = driver.find_elements(By.CSS_SELECTOR, 'div.tcg-accordion-panel')
+
+        for found_panel in found_panels:
+            header = found_panel.find_element(By.CSS_SELECTOR, "div.tcg-accordion-panel-header")
+            header_content = found_panel.find_element(By.CSS_SELECTOR, "span.tcg-accordion-panel-header__content")
+
+            if header_content and (header_content.text.lower() == "set name"):
+                # Check if already expanded
+                if "is-open" not in header.get_attribute("class"):
+                    # Expand to get sets
+                    action_chains = ActionChains(driver)
+                    action_chains.move_to_element(header_content).click().perform()
+
+                set_names = found_panel.find_elements(By.CSS_SELECTOR, ".tcg-input-checkbox__label-text div > div:first-child")
+                if set_names:
+                    for set_name in set_names:
+                        sets.append(set_name.text)
+
+    except Exception as e:
+        print(e)
+    
+    return sets
+
+def setup_selenium_driver():
+    options = ChromeOptions()
+    options.add_argument('--start-maximized')
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    
+    driver = Chrome(options=options)
+
+    return driver
+
 def main(argv):
     # defaults
     store_name = ""
@@ -248,7 +297,6 @@ def main(argv):
     desired_cards = []
     if want_file_location:
         desired_cards = load_desired_cards_from_file(want_file_location)
-        print("Total desired cards to search for: " + str(len(desired_cards)))
 
     store_id = get_store_id(store_name)
 
@@ -261,7 +309,22 @@ def main(argv):
         print("No corresponding store url found. Exiting.")
         sys.exit(2)
 
-    store_card_inventory = scrape_store_inventory(store_front_url)
+    # Move below to a scrape store by sets function that returns all cards found
+    driver = setup_selenium_driver()
+
+    sets = get_sets(driver, store_front_url)
+    store_card_inventory = []
+
+    print("Store: " + store_name)
+    print("Store id: " + store_id)
+    print("Store URL: " + store_front_url)
+    print("Total desired cards to search for: " + str(len(desired_cards)))
+
+    if sets:
+        for set in sets:
+            print("Scraping by set name: " + set)
+            store_card_inventory += scrape_store_inventory(driver, store_front_url, set)
+
     found_cards_in_inventory = find_wanted_cards(store_card_inventory, desired_cards)
 
     write_to_excel(store_card_inventory, desired_cards, found_cards_in_inventory)
