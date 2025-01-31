@@ -3,6 +3,7 @@ import requests
 import json
 import pandas as pd
 import getopt
+import re
 import sys
 import urllib.parse
 from selenium.webdriver import Chrome, ChromeOptions
@@ -11,6 +12,12 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import constants
 import time
+
+headless = ""
+sleep_time_between_pages = 2
+cards_header = ["Name", "Treatment", "Name Without Treatment", "Set", "Rarity", "Quantity", "Condition/Language", "Price", "Image URL", "Product URL"]
+wanted_cards_header = ["Quantity", "Name"]
+found_cards_header = ["Name"]
 
 def is_json(myjson):
   """Checks to see if the given string is valid JSON
@@ -76,7 +83,8 @@ def get_store_info(store_key):
 def scrape_store_inventory(driver, store_front_url, set_name):
     # We'll want to restrict to the product search, particularly only for MTG cards
     # /search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48
-    url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48&view=list"
+    # Do an initial page load to get page count
+    url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48&view=list&page=1"
 
     if set_name:
         set_qs = { "setName": set_name }
@@ -86,7 +94,7 @@ def scrape_store_inventory(driver, store_front_url, set_name):
     driver.get(url)
 
     # Waiting for web requests to finish. Yeah, better ways to do this. Sue me.
-    driver.implicitly_wait(5)
+    driver.implicitly_wait(sleep_time_between_pages)
 
     try:
         last_page = driver.find_element(By.CSS_SELECTOR, ".tcg-pagination .tcg-pagination__pages .tcg-standard-button--flat:nth-last-child(1)")
@@ -96,6 +104,8 @@ def scrape_store_inventory(driver, store_front_url, set_name):
     except Exception as e:
         total_pages = 1
 
+    # TODO: Reduce calls per set to just 1. Right now it hits the list page without a page loaded to get number of pages and then it goes through each page
+
     # Looks like TCGPlayer may limit how many pages with pageSize=48 somebody can go. Looks like the stopper is something like 208. Which is nearly 10k cards.
     # Tried 36 as the number per page, and the top limit is around 277 pages which is also right near 10k cards. 
     # Tried 24 as the number per page, and my hunch was it'd stop at double the 48 pageSize (416). And this was true, too. So, looks like TCGPlayer doesn't want you to go more
@@ -104,13 +114,17 @@ def scrape_store_inventory(driver, store_front_url, set_name):
 
     all_cards = []
     for page_number in range(total_pages):
-        paginated_url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48&view=list&page=" + str(page_number+1)
+        if page_number == 0:
+            # Setting URL empty for page 1, since we're already on it. Save an unnecessary call.
+            cards = scrape_store_page_contents_list_view(driver, "")
+        else:
+            paginated_url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48&view=list&page=" + str(page_number+1)
 
-        if set_name:
-            set_qs = { "setName": set_name }
-            paginated_url = paginated_url + "&" + urllib.parse.urlencode(set_qs)
+            if set_name:
+                set_qs = { "setName": set_name }
+                paginated_url = paginated_url + "&" + urllib.parse.urlencode(set_qs)
 
-        cards = scrape_store_page_contents_list_view(driver, paginated_url)
+            cards = scrape_store_page_contents_list_view(driver, paginated_url)
 
         # Might hit the end of the line of cards
         if len(cards) == 0:
@@ -129,6 +143,21 @@ def scroll_to_bottom(driver, speed):
         driver.execute_script(f"window.scrollTo(0, {i});")
         time.sleep(0.10)
 
+def get_card_treatment(name):
+    if name:
+        matches = re.findall(r'\((.*?)\)', name)
+
+        if matches:
+            return matches[0]
+
+    return ""
+
+def remove_card_treatment_info(name):
+    if name:
+        return re.sub("[\(\[].*?[\)\]]", "", name)
+    
+    return name
+
 def scrape_store_page_contents_list_view(driver, url):
     # div.search-results-list__info
     #   image:              div.search-results-list__image-container img
@@ -143,9 +172,11 @@ def scrape_store_page_contents_list_view(driver, url):
     #           condition:  .sku-list__condition (might also have language, i.e. Heavily Played Foil - English)
     #           quantity:   .tcg-quantity-selector__max-available  (Strip "of ")
     #       
-    driver.get(url)
+    if url:
+        driver.get(url)
 
-    time.sleep(3)
+    # this is only here so we don't go crazy with the web requests
+    time.sleep(sleep_time_between_pages)
 
     scroll_to_bottom(driver, 800)
 
@@ -154,6 +185,8 @@ def scrape_store_page_contents_list_view(driver, url):
 
     for card in found_cards:
         name = card.find_element(By.CSS_SELECTOR, ".search-results-list__name").text
+        name_without_treatment = remove_card_treatment_info(name)
+        treatment = get_card_treatment(name)
 
         # TODO: Make a basic name that doesn't have alternate print names so we can try and do a catchall. Need to find the right way to pattern match this.
         set = ""
@@ -194,16 +227,17 @@ def scrape_store_page_contents_list_view(driver, url):
             condition_language = sku.find_element(By.CSS_SELECTOR, ".sku-list__condition").text
             quantity = sku.find_element(By.CSS_SELECTOR, ".tcg-quantity-selector__max-available").text.replace("of ", "")
 
-            card = [name, set, rarity, quantity, condition_language, price, image_url, product_url]
+            card = [name, treatment, name_without_treatment, set, rarity, quantity, condition_language, price, image_url, product_url]
             cards.append(card)
 
     return cards
 
 def scrape_store_page_contents_grid_view(driver, url):    
+    if url:
+        driver.get(url)
 
-    driver.get(url)
-
-    time.sleep(3)
+        # this is only here so we don't go crazy with the web requests
+        time.sleep(sleep_time_between_pages)
 
     scroll_to_bottom(driver, 400)
 
@@ -213,6 +247,8 @@ def scrape_store_page_contents_grid_view(driver, url):
     for card in found_cards:
         # search-results-cards__name (just the text is the name of the card)
         name = card.find_element(By.CSS_SELECTOR, ".search-results-cards__name").text
+        name_without_treatment = remove_card_treatment_info(name)
+        treatment = get_card_treatment(name)
 
         # TODO: Make a basic name that doesn't have alternate print names so we can try and do a catchall. Need to find the right way to pattern match this.
 
@@ -240,7 +276,7 @@ def scrape_store_page_contents_grid_view(driver, url):
         
         product_url = card.get_attribute("href")
 
-        card = [name, set, rarity, "", "", price, image_url, product_url]
+        card = [name, treatment, name_without_treatment, set, rarity, "", "", price, image_url, product_url]
         cards.append(card)
 
     return cards
@@ -277,21 +313,19 @@ def load_desired_cards_from_file(file_location):
 def column(matrix, i):
     return [row[i] for row in matrix]
 
-def find_wanted_cards(store_card_inventory, wanted_cards):
-    card_names = column(store_card_inventory, 0)
+def find_wanted_cards_dataframe(store_card_inventory, wanted_cards):
+    # let's use pandas to grab rows from scraped site so that all of the columns are visible so users can quickly see things like price, condition, etc. instead of just card name
     wanted_card_names = column(wanted_cards, 1)
 
-    return list(set(card_names) & set(wanted_card_names))
+    # Get dataframe to query against
+    cards_df = pd.DataFrame(data = store_card_inventory, columns = cards_header)
+    found_cards_df = cards_df[cards_df["Name"].isin(wanted_card_names)] 
 
-def write_to_excel(store_card_inventory, wanted_cards, found_cards):
-    
-    cards_header = ["Name", "Set", "Rarity", "Quantity", "Condition/Language", "Price", "Image URL", "Product URL"]
-    wanted_cards_header = ["Quantity", "Name"]
-    found_cards_header = ["Name"]
+    return found_cards_df
 
+def write_to_excel(store_card_inventory, wanted_cards, found_cards_df):
     cards_df = pd.DataFrame(data = store_card_inventory, columns = cards_header)
     wanted_cards_df = pd.DataFrame(data = wanted_cards, columns = wanted_cards_header)
-    found_cards_df = pd.DataFrame(data = found_cards, columns = found_cards_header)
  
     writer = pd.ExcelWriter("tcg_player_inventory_for_store.xlsx", engine = "xlsxwriter", engine_kwargs={"options": {"strings_to_urls": False}})
 
@@ -307,7 +341,7 @@ def get_sets(driver, store_front_url):
 
     driver.get(url)
 
-    time.sleep(3)
+    time.sleep(sleep_time_between_pages)
 
     try:
         found_panels = driver.find_elements(By.CSS_SELECTOR, 'div.tcg-accordion-panel')
@@ -335,6 +369,12 @@ def get_sets(driver, store_front_url):
 
 def setup_selenium_driver():
     options = ChromeOptions()
+
+    # Does not like headless due to out of bounds, will need to look into this. Trying the headless=new flag for full featured Chrome, but new headless implementation
+    # Headless=new requires Chrome 109. Need to add the Chrome installation dependency.
+    if headless:
+        options.add_argument(headless)
+
     options.add_argument('--start-maximized')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     
@@ -364,7 +404,6 @@ def main(argv):
     store_name = ""
     store_url = ""
     want_file_location = ""
-    headless = ""
 
     try:
         opts, args = getopt.getopt(argv,"s:u:w:h",["store-name=","store-url=","want-file-location=","headless-flag="])
@@ -418,9 +457,9 @@ def main(argv):
     print("Total desired cards to search for: " + str(len(desired_cards)))
 
     store_card_inventory = scrape_store_by_sets(store_front_url)
-    found_cards_in_inventory = find_wanted_cards(store_card_inventory, desired_cards)
+    found_cards_in_inventory_df = find_wanted_cards_dataframe(store_card_inventory, desired_cards)
 
-    write_to_excel(store_card_inventory, desired_cards, found_cards_in_inventory)
+    write_to_excel(store_card_inventory, desired_cards, found_cards_in_inventory_df)
 
     end = time.time()
     elapsed_time = end - start
@@ -431,8 +470,9 @@ def main(argv):
     print("Cards scraped: " + str(total_cards_scraped))
     print("Cards scraped per second: " + str(cards_scraped_per_second))
 
-    #TODO: Maybe do a price comparison between found cards in store inventory and TCGPlayer market price
-    #TODO: Add found cards over
+    # put in run documentation
+    # with 3 seconds between web requests, we ended up average nearly 5 cards/second, non-optimized so was doing at least an extra page load unnecessarily 
+    # with 2 seconds between web requests, a store with only ~1,500 cards had a very low rate because there were a ton of sets with only 1 card so it drove down the average, however, with a store with far more (40k) did 6 cards/sec
 
 if __name__ == "__main__":
     main(sys.argv[1:])
