@@ -35,8 +35,10 @@ def get_my_store_id():
     response = requests.get(url, headers=headers)
 
     if (is_json(response.text)):
-        resp_json = json.loads(response.text)        
-        return resp_json["results"][0]
+        resp_json = json.loads(response.text)     
+
+        if "results" in resp_json and len(resp_json["results"]) > 0:  
+            return resp_json["results"][0]
     
     return ""
 
@@ -49,7 +51,9 @@ def get_store_id(store_name):
 
     if (is_json(response.text)):
         resp_json = json.loads(response.text)        
-        return resp_json["results"][0]
+
+        if "results" in resp_json and len(resp_json["results"]) > 0:  
+            return resp_json["results"][0]
     
     return ""
 
@@ -61,8 +65,10 @@ def get_store_info(store_key):
     response = requests.get(url, headers=headers)
 
     if (is_json(response.text)):
-        resp_json = json.loads(response.text)        
-        return resp_json["results"][0]
+        resp_json = json.loads(response.text)    
+
+        if "results" in resp_json and len(resp_json["results"]) > 0:  
+            return resp_json["results"][0]
     
     return ""
 
@@ -70,7 +76,7 @@ def get_store_info(store_key):
 def scrape_store_inventory(driver, store_front_url, set_name):
     # We'll want to restrict to the product search, particularly only for MTG cards
     # /search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48
-    url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48"
+    url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48&view=list"
 
     if set_name:
         set_qs = { "setName": set_name }
@@ -98,13 +104,13 @@ def scrape_store_inventory(driver, store_front_url, set_name):
 
     all_cards = []
     for page_number in range(total_pages):
-        paginated_url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48&page=" + str(page_number+1)
+        paginated_url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48&view=list&page=" + str(page_number+1)
 
         if set_name:
             set_qs = { "setName": set_name }
             paginated_url = paginated_url + "&" + urllib.parse.urlencode(set_qs)
 
-        cards = scrape_store_page_contents(driver, paginated_url)
+        cards = scrape_store_page_contents_list_view(driver, paginated_url)
 
         # Might hit the end of the line of cards
         if len(cards) == 0:
@@ -115,22 +121,91 @@ def scrape_store_inventory(driver, store_front_url, set_name):
 
     return all_cards
 
-def scroll_to_bottom(driver):
+def scroll_to_bottom(driver, speed):
     scroll_height = driver.execute_script("return document.body.scrollHeight;")
-    increment = 400
+    increment = speed
 
     for i in range(0, scroll_height, increment):
         driver.execute_script(f"window.scrollTo(0, {i});")
         time.sleep(0.10)
 
-def scrape_store_page_contents(driver, url):    
-    #TODO: Adjust to grab list view so we can get expanded info, primarily the actual condition, if it's foil, and quantity available, will also show multiple available, too
+def scrape_store_page_contents_list_view(driver, url):
+    # div.search-results-list__info
+    #   image:              div.search-results-list__image-container img
+    #   card info:          div.search-results-list__card-info
+    #       name:           .search-results-list__name
+    #       rarity:         .search-results-list__rarity (Strip out "Rarity: ")
+    #       set:            .search-results-list__set (Strip out "Set: )
+    #       URL:            a.search-results-list__details
+    #   SKUs:               div.search-results-list__skus
+    #       list item:      .sku-list__list-item
+    #           price:      .sku-list__price
+    #           condition:  .sku-list__condition (might also have language, i.e. Heavily Played Foil - English)
+    #           quantity:   .tcg-quantity-selector__max-available  (Strip "of ")
+    #       
+    driver.get(url)
+
+    time.sleep(3)
+
+    scroll_to_bottom(driver, 800)
+
+    cards = []
+    found_cards = driver.find_elements(By.CSS_SELECTOR, 'div.search-results-list__info')
+
+    for card in found_cards:
+        name = card.find_element(By.CSS_SELECTOR, ".search-results-list__name").text
+
+        # TODO: Make a basic name that doesn't have alternate print names so we can try and do a catchall. Need to find the right way to pattern match this.
+        set = ""
+
+        try:   
+            set_holder = card.find_element(By.CSS_SELECTOR, ".search-results-list__set")
+            if (set_holder):
+                set = set_holder.text.replace("Set: ", "")
+        except Exception as e:
+            set = ""
+         
+        rarity = ""
+
+        # sometimes, no rarity (i.e. Secret Lair packs)
+        try:
+            rarity_holder = card.find_element(By.CSS_SELECTOR, ".search-results-list__rarity")
+            if (rarity_holder):
+                rarity = rarity_holder.text.replace("Rarity: ", "")
+        except Exception as e:
+            rarity = ""
+        
+        product_url = card.find_element(By.CSS_SELECTOR, "a.search-results-list__details").get_attribute("href")
+
+        image_url = ""
+
+        # for some reason, grabbing the SRC of the image on the list page is absurdly slow, so we are going to construct the URL based on card id found in product detail page
+        # format follows: https://tcgplayer-cdn.tcgplayer.com/product/{id}_200w.jpg
+        # example: https://tcgplayer-cdn.tcgplayer.com/product/282745_200w.jpg
+        if product_url:
+            parts = product_url.split("/")
+            card_id = parts[-1]
+            image_url = "https://tcgplayer-cdn.tcgplayer.com/product/" + card_id + "_200w.jpg"
+
+        # This has SKUs, so we'll go through each (i.e. multiple conditions) and add them as individual list items
+        card_skus = card.find_elements(By.CSS_SELECTOR, ".sku-list__list-item")
+        for sku in card_skus:
+            price = sku.find_element(By.CSS_SELECTOR, ".sku-list__price").text
+            condition_language = sku.find_element(By.CSS_SELECTOR, ".sku-list__condition").text
+            quantity = sku.find_element(By.CSS_SELECTOR, ".tcg-quantity-selector__max-available").text.replace("of ", "")
+
+            card = [name, set, rarity, quantity, condition_language, price, image_url, product_url]
+            cards.append(card)
+
+    return cards
+
+def scrape_store_page_contents_grid_view(driver, url):    
 
     driver.get(url)
 
     time.sleep(3)
 
-    scroll_to_bottom(driver)
+    scroll_to_bottom(driver, 400)
 
     cards = []
     found_cards = driver.find_elements(By.CSS_SELECTOR, 'a.search-results-cards__card')
@@ -165,7 +240,7 @@ def scrape_store_page_contents(driver, url):
         
         product_url = card.get_attribute("href")
 
-        card = [name, set, rarity, price, image_url, product_url]
+        card = [name, set, rarity, "", "", price, image_url, product_url]
         cards.append(card)
 
     return cards
@@ -210,7 +285,7 @@ def find_wanted_cards(store_card_inventory, wanted_cards):
 
 def write_to_excel(store_card_inventory, wanted_cards, found_cards):
     
-    cards_header = ["Name", "Set", "Rarity", "Price", "Image URL", "Product URL"]
+    cards_header = ["Name", "Set", "Rarity", "Quantity", "Condition/Language", "Price", "Image URL", "Product URL"]
     wanted_cards_header = ["Quantity", "Name"]
     found_cards_header = ["Name"]
 
@@ -227,7 +302,7 @@ def write_to_excel(store_card_inventory, wanted_cards, found_cards):
     writer.close()
 
 def get_sets(driver, store_front_url):
-    url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48"
+    url = store_front_url + "search/products?q=&productLineName=Magic:+The+Gathering&pageSize=48&view=list"
     sets = []
 
     driver.get(url)
@@ -267,61 +342,11 @@ def setup_selenium_driver():
 
     return driver
 
-def main(argv):
-    # defaults
-    store_name = ""
-    want_file_location = ""
-    headless = ""
-
-    try:
-        opts, args = getopt.getopt(argv,"s:w:h:",["store-name=","want-file-location=","headless-flag="])
-    except getopt.GetoptError:
-        print('tcg_player_searcher.py -s <store-name> -w <want-file-location> -h <headless-flag>')
-        print("store-name is the official TCG Player store name to look for")
-        print("want-file-location is the file location for a list of card names (in a text file) that you're looking to find for the store")
-        print("headless-flag is the Selenium/Chrome flag to run headless. Values can be: empty (won't run headless), --headless (old headless for Chrome < v109), and --headless=new for full Chrome but headless (Chrome >= v109)")
-        sys.exit(2)
-
-    for opt, arg in opts:
-        if opt in ("-s", "--store-name"):
-            store_name = arg      
-        if opt in ("-w", "--agencies"):
-            want_file_location = arg
-        if opt in ("-h", "--headless-flag"):
-            headless = arg   
-
-    # Store name is mandatory
-    if not store_name:
-        print("Please provide store name. Exiting.")
-        sys.exit(2)
-
-    desired_cards = []
-    if want_file_location:
-        desired_cards = load_desired_cards_from_file(want_file_location)
-
-    start = time.time()
-
-    store_id = get_store_id(store_name)
-
-    if not store_id:
-        print("No store found. Exiting.")
-        sys.exit(2)
-
-    store_front_url = get_store_info(store_id)["storefrontUrl"]
-    if not store_front_url:
-        print("No corresponding store url found. Exiting.")
-        sys.exit(2)
-
-    # Move below to a scrape store by sets function that returns all cards found
+def scrape_store_by_sets(store_front_url):
     driver = setup_selenium_driver()
 
     sets = get_sets(driver, store_front_url)
     store_card_inventory = []
-
-    print("Store: " + store_name)
-    print("Store id: " + store_id)
-    print("Store URL: " + store_front_url)
-    print("Total desired cards to search for: " + str(len(desired_cards)))
 
     if sets:
         for set in sets:
@@ -332,6 +357,67 @@ def main(argv):
 
             store_card_inventory += store_card_set_inventory
 
+    return store_card_inventory
+
+def main(argv):
+    # defaults
+    store_name = ""
+    store_url = ""
+    want_file_location = ""
+    headless = ""
+
+    try:
+        opts, args = getopt.getopt(argv,"s:u:w:h",["store-name=","store-url=","want-file-location=","headless-flag="])
+    except getopt.GetoptError:
+        print('tcg_player_searcher.py -s <store-name> -u <store-url> -w <want-file-location> -h <headless-flag>')
+        print("store-url is the TCGPlayer Pro store URL. If provided, store-name will be bypassed and the store URL will be directly used and no API calls will be made to find store information.")
+        print("store-name is the official TCG Player store name to look for")
+        print("want-file-location is the file location for a list of card names (in a text file) that you're looking to find for the store")
+        print("headless-flag is the Selenium/Chrome flag to run headless. Values can be: empty (won't run headless), --headless (old headless for Chrome < v109), and --headless=new for full Chrome but headless (Chrome >= v109)")
+        sys.exit(2)
+
+    for opt, arg in opts:
+        if opt in ("-s", "--store-name"):
+            store_name = arg      
+        if opt in ("-u", "--store-url"):
+            store_url = arg      
+        if opt in ("-w", "--want-file-location"):
+            want_file_location = arg
+        if opt in ("-h", "--headless-flag"):
+            headless = arg   
+
+    # Store name is mandatory
+    if not store_name and not store_url:
+        print("Please provide store name or a store URL. Exiting.")
+        sys.exit(2)
+
+    desired_cards = []
+    if want_file_location:
+        desired_cards = load_desired_cards_from_file(want_file_location)
+
+    start = time.time()
+
+    if store_name:
+        store_id = get_store_id(store_name)
+
+        if not store_id:
+            print("No store found. Exiting.")
+            sys.exit(2)
+
+        store_front_url = get_store_info(store_id)["storefrontUrl"]
+        if not store_front_url:
+            print("No corresponding store url found. Exiting.")
+            sys.exit(2)
+
+        print("Store: " + store_name)
+        print("Store id: " + store_id)
+    else:
+        store_front_url = store_url
+
+    print("Store URL: " + store_front_url)
+    print("Total desired cards to search for: " + str(len(desired_cards)))
+
+    store_card_inventory = scrape_store_by_sets(store_front_url)
     found_cards_in_inventory = find_wanted_cards(store_card_inventory, desired_cards)
 
     write_to_excel(store_card_inventory, desired_cards, found_cards_in_inventory)
