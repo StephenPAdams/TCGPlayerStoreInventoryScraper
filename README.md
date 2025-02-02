@@ -12,7 +12,7 @@ Well, that other avenue is scraping. While, some of the code is still in this co
 What this code does is the following:
 
 1. Goes through the storefront's site and scrapes their M:TG inventory: card name, treatment, set, rarity, quantity available, condition/language, price, image URL, and product detail URL. 
-2. It, optionally, takes in a file of wanted cards (simply the quantity and name of the card delimited gby a space)
+2. It, optionally, takes in a file of wanted cards (simply the quantity and name of the card delimited by a space). An example is located in the src folder called desired_cards_example.txt.
 3. At the end of the scrape, it dumps all of the inventory into an Excel file with 3 worksheets: Store Inventory, Wanted Cards (from the optional file provided), and a Found Cards worksheet that lists all of the store inventory items that match the wanted cards.
 
 # Overview
