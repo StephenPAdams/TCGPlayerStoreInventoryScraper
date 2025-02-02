@@ -470,9 +470,5 @@ def main(argv):
     print("Cards scraped: " + str(total_cards_scraped))
     print("Cards scraped per second: " + str(cards_scraped_per_second))
 
-    # put in run documentation
-    # with 3 seconds between web requests, we ended up average nearly 5 cards/second, non-optimized so was doing at least an extra page load unnecessarily 
-    # with 2 seconds between web requests, a store with only ~1,500 cards had a very low rate because there were a ton of sets with only 1 card so it drove down the average, however, with a store with far more (40k) did 6 cards/sec
-
 if __name__ == "__main__":
     main(sys.argv[1:])
