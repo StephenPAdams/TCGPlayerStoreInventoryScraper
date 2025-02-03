@@ -5,12 +5,13 @@ import pandas as pd
 import getopt
 import re
 import sys
+import os
 import urllib.parse
+from dotenv import load_dotenv
 from selenium.webdriver import Chrome, ChromeOptions
 from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
-import constants
 import time
 
 headless = ""
@@ -41,9 +42,9 @@ def get_my_store_id():
         JSON: store id
     """
 
-    url = constants.TCG_PLAYER_API_BASE_URL + "/stores/self"
+    url = os.getenv("TCG_PLAYER_API_BASE_URL") + "/stores/self"
     
-    headers = {"accept": "application/json", "Authorization": "bearer " + constants.TCG_PLAYER_API_KEY}
+    headers = {"accept": "application/json", "Authorization": "bearer " + os.getenv("TCG_PLAYER_API_KEY")}
     
     response = requests.get(url, headers=headers)
 
@@ -65,9 +66,9 @@ def get_store_id(store_name):
         JSON: store id
     """
 
-    url = constants.TCG_PLAYER_API_BASE_URL + "/stores?name=" + store_name
+    url = os.getenv("TCG_PLAYER_API_BASE_URL") + "/stores?name=" + store_name
     
-    headers = {"accept": "application/json", "Authorization": "bearer " + constants.TCG_PLAYER_API_KEY}
+    headers = {"accept": "application/json", "Authorization": "bearer " + os.getenv("TCG_PLAYER_API_KEY")}
     
     response = requests.get(url, headers=headers)
 
@@ -89,9 +90,9 @@ def get_store_info(store_key):
         JSON: store info from the /stores/ endpoint.
     """
 
-    url = constants.TCG_PLAYER_API_BASE_URL + "/stores/" + store_key
+    url = os.getenv("TCG_PLAYER_API_BASE_URL") + "/stores/" + store_key
     
-    headers = {"accept": "application/json", "Authorization": "bearer " + constants.TCG_PLAYER_API_KEY}
+    headers = {"accept": "application/json", "Authorization": "bearer " + os.getenv("TCG_PLAYER_API_KEY")}
     
     response = requests.get(url, headers=headers)
 
@@ -504,6 +505,8 @@ def main(argv):
     if not store_name and not store_url:
         print("Please provide store name or a store URL. Exiting.")
         sys.exit(2)
+
+    load_dotenv()
 
     desired_cards = []
     if want_file_location:

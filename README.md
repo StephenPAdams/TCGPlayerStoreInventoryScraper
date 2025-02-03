@@ -75,3 +75,11 @@ At the end of this script, it'll export 1 file
 - tcg_player_inventory_for_store.xlsx
 
 Yes, I need to dynamically change the name of the file output so it includes the store name and date/time of the run. That'll be a future improvement. I should probably also put the run details in a worksheet within the file. 
+
+# Environment Variables
+This script is built to use OS level environment variables, however, for development purposes, it leverages the python-dotenv library so that an env file can be used. For reference, here are the environment variables named:
+
+- TCG_PLAYER_API_KEY
+- TCG_PLAYER_API_BASE_URL
+
+They're pretty self explanatory. But, remember, the API is no longer really needed as the inventory can be scraped just by providing the TCGPlayer Pro URL as a command line argument.
